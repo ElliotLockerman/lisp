@@ -91,6 +91,8 @@ enum Token {
     Float(f64),
     Str(String),
     Variable(String),
+    True,
+    Nil,
     // TODO: char, symbol
 }
 
@@ -237,6 +239,8 @@ impl TokenStream {
             "(" => return Ok(Token::ParenOpen),
             "'(" => return Ok(Token::QuotedOpen),
             ")" => return Ok(Token::ParenClose),
+            "t" => return Ok(Token::True),
+            "Nil" => return Ok(Token::Nil),
             _ => (),
         }
         if let Some(i) = word.parse::<i32>().ok() {
@@ -263,6 +267,8 @@ enum Atom {
     Float(f64),
     Str(String),
     Variable(String),
+    True,
+    Nil,
     // TODO: char, symbol
 }
 
@@ -299,6 +305,8 @@ impl Parser {
             Token::Float(f) => Atom::Float(f),
             Token::Str(s) => Atom::Str(s),
             Token::Variable(s) => Atom::Variable(s),
+            Token::True => Atom::True,
+            Token::Nil => Atom::Nil,
         };
 
         SExpr::Atom(atom)
@@ -534,9 +542,64 @@ fn builtin_mod(vals: &Vec<Value>) -> Result<Value, Error> {
 fn builtin_print(vals: &Vec<Value>) -> Result<Value, Error> {
     let s = vals.iter() .map(|x| format!("{}", x));
     println!("{}", join(s, " ")); 
-    Ok(Value::Nil)
+    Ok(Value::Bool(false))
 }
 
+
+fn num_eq(a: &Value, b:&Value) -> Result<bool, Error> {
+    let val = match a {
+        Value::Int(a) => {
+            match b {
+                Value::Int(b) => a == b,
+                Value::Float(b) => (*a as f64) == *b,
+                _ => return fmt_err!("Only numbers are comparable with `='"),
+            }
+        },
+        Value::Float(a) => {
+            match b {
+                Value::Int(b) => *a == (*b as f64),
+                Value::Float(b) => a == b,
+                _ => return fmt_err!("Only numbers are comparable with `='"),
+            }
+        },
+        _ => return fmt_err!("Only numbers are comparable with `='"),
+    };
+
+    Ok(val)
+}
+
+fn builtin_num_eq(vals: &Vec<Value>) -> Result<Value, Error> {
+    let mut iter = vals.iter();
+    let first = match iter.next() {
+        Some(x) => x,
+        None => return fmt_err!("`=' missing arguments"),
+    };
+
+    while let Some(next) = iter.next() {
+        if !num_eq(first, next)? {
+            return Ok(Value::Bool(false));
+        }
+    }
+
+    Ok(Value::Bool(true))
+}
+
+fn builtin_num_neq(vals: &Vec<Value>) -> Result<Value, Error> {
+    let mut iter = vals.iter();
+    let first = match iter.next() {
+        Some(x) => x,
+        None => return fmt_err!("`=' missing arguments"),
+    };
+
+
+    while let Some(next) = iter.next() {
+        if num_eq(first, next)? {
+            return Ok(Value::Bool(false));
+        }
+    }
+
+    Ok(Value::Bool(true))
+}
 
 #[derive(Debug, Clone)]
 struct Func {
@@ -552,7 +615,7 @@ enum Value {
     Float(f64),
     Str(String),
     Func(Func),
-    Nil,
+    Bool(bool),
     // TODO: fn
 }
 
@@ -563,7 +626,7 @@ impl std::fmt::Display for Value {
             Value::Float(x) => write!(f, "{}", x),
             Value::Str(x) => write!(f, "{}", x),
             Value::Func(_) => write!(f, "fn"),
-            Value::Nil => write!(f, "Nil"),
+            Value::Bool(b) => write!(f, "{}", if *b { "T" } else { "Nil" }),
         }
     }
 }
@@ -593,6 +656,8 @@ impl Interp {
         interp.builtins.insert("/".into(), builtin_quot);
         interp.builtins.insert("mod".into(), builtin_mod);
         interp.builtins.insert("print".into(), builtin_print);
+        interp.builtins.insert("=".into(), builtin_num_eq);
+        interp.builtins.insert("/=".into(), builtin_num_neq);
 
         interp
     }
@@ -613,6 +678,8 @@ impl Interp {
                 }
                 return fmt_err!("Variable `{}' not found", s)
             },
+            Atom::True => Value::Bool(true),
+            Atom::Nil => Value::Bool(false),
         };
         Ok(val)
     }
@@ -634,9 +701,10 @@ impl Interp {
         Ok(params)
     }
 
+
     fn eval_list(&mut self, list: &Vec<SExpr>) -> Result<Value, Error> {
         if list.is_empty() {
-            return Ok(Value::Nil);
+            return Ok(Value::Bool(false));
         }
 
         let mut iter = list.iter();
@@ -646,6 +714,7 @@ impl Interp {
         };
 
 
+        // TODO: break these out
         if func == "let" {
             let (params, vals) = match iter.next() {
                 Some(bindings) => self.eval_let_bindings(bindings)?,
@@ -656,7 +725,7 @@ impl Interp {
                 Some(body) => body,
                 _ => return fmt_err!("`let' missing body"),
             };
-            return self.eval_let(&params, &vals, body);
+            return self.eval_let_body(&params, &vals, body);
         } else if func == "defun" {
             // TODO: function definitions are now global. If this behavior is kept, disallow defun
             // top level?
@@ -671,7 +740,7 @@ impl Interp {
             };
             let params = match iter.next() {
                 Some(bindings) => self.eval_fun_params(bindings)?,
-                _ => return fmt_err!("`deffun' missing bindings and body"),
+                _ => return fmt_err!("`defun' missing bindings and body"),
             };
 
             let body = match iter.next() {
@@ -681,7 +750,29 @@ impl Interp {
 
             let func = Func{params, body: body.clone()};
             self.let_var[0].insert(name.clone(), Value::Func(func));
-            return Ok(Value::Nil);
+            return Ok(Value::Bool(false));
+        } else if func == "if" {
+            let cond = match iter.next() {
+                Some(cond) => cond,
+                _ => return fmt_err!("`if' missing condition"),
+            };
+
+            let then = match iter.next() {
+                Some(then) => then,
+                _ => return fmt_err!("`if' missing then clause"),
+            };
+
+            let other = match iter.next() {
+                Some(other) => other,
+                _ => &SExpr::Atom(Atom::Nil),
+            };
+
+            let val = match self.eval_sexpr(cond)? {
+                Value::Bool(false) => self.eval_sexpr(other)?,
+                _ => self.eval_sexpr(then)?,
+            };
+
+            return Ok(val);
         }
 
         let mut vals = Vec::<_>::new();
@@ -702,7 +793,7 @@ impl Interp {
 
             let func = func.clone(); // TODO: this avoid self.eval_let() reborrowing as mut while the func itself is borrowed in the .get(). Is this nececssary?
 
-            return self.eval_let(&func.params, &vals, &func.body);
+            return self.eval_let_body(&func.params, &vals, &func.body);
         } else {
             fmt_err!("Function `{}' not found", func)
         }
@@ -747,7 +838,7 @@ impl Interp {
         Ok((params, vals))
     }
 
-    fn eval_let(&mut self, params: &Vec<String>, vals: &Vec<Value>, expr: &SExpr) -> Result<Value, Error> {
+    fn eval_let_body(&mut self, params: &Vec<String>, vals: &Vec<Value>, expr: &SExpr) -> Result<Value, Error> {
         if params.len() != vals.len() {
             return fmt_err!("Number of arguments doesn't match number of formal parameters");
         }
