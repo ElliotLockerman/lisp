@@ -97,8 +97,7 @@ enum Token {
 
 struct TokenStream {
     stream: RustylineStream,
-    next: Option<Token>,
-}
+    next: Option<Token>, }
 
 
 impl TokenStream {
@@ -258,7 +257,7 @@ impl TokenStream {
 
 //////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Atom {
     Int(i32),
     Float(f64),
@@ -267,7 +266,7 @@ enum Atom {
     // TODO: char, symbol
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum SExpr {
     Atom(Atom),
     List(Vec<SExpr>),
@@ -540,10 +539,19 @@ fn builtin_print(vals: &Vec<Value>) -> Result<Value, Error> {
 
 
 #[derive(Debug, Clone)]
+struct Func {
+    params: Vec<String>,
+    body: SExpr,
+}
+
+
+
+#[derive(Debug, Clone)]
 enum Value {
     Int(i32),
     Float(f64),
     Str(String),
+    Func(Func),
     Nil,
     // TODO: fn
 }
@@ -554,6 +562,7 @@ impl std::fmt::Display for Value {
             Value::Int(x) => write!(f, "{}", x),
             Value::Float(x) => write!(f, "{}", x),
             Value::Str(x) => write!(f, "{}", x),
+            Value::Func(_) => write!(f, "fn"),
             Value::Nil => write!(f, "Nil"),
         }
     }
@@ -588,7 +597,7 @@ impl Interp {
         interp
     }
 
-    fn exec_atom(&mut self, atom: &Atom) -> Result<Value, Error> {
+    fn eval_atom(&mut self, atom: &Atom) -> Result<Value, Error> {
         let val = match atom {
             Atom::Int(i) => Value::Int(*i),
             Atom::Float(f) => Value::Float(*f),
@@ -608,8 +617,24 @@ impl Interp {
         Ok(val)
     }
 
+    fn eval_fun_params(&mut self, expr: &SExpr) -> Result<Vec<String>, Error> {
+        let list = match expr {
+            SExpr::List(l) => l,
+            _ => return fmt_err!("`defun' formal parameters must be a list"),
+        };
 
-    fn exec_list(&mut self, list: &Vec<SExpr>) -> Result<Value, Error> {
+        
+        let mut params = vec![];
+        for param in list {
+            match param {
+                SExpr::Atom(Atom::Variable(s)) => params.push(s.clone()),
+                _ => return fmt_err!("`defun' formal parameter must be variable name"),
+            }
+        }
+        Ok(params)
+    }
+
+    fn eval_list(&mut self, list: &Vec<SExpr>) -> Result<Value, Error> {
         if list.is_empty() {
             return Ok(Value::Nil);
         }
@@ -620,35 +645,122 @@ impl Interp {
             func => return fmt_err!("Invalid function {:?}", func),
         };
 
+
+        if func == "let" {
+            let (params, vals) = match iter.next() {
+                Some(bindings) => self.eval_let_bindings(bindings)?,
+                _ => return fmt_err!("`let' missing bindings and body"),
+            };
+
+            let body = match iter.next() {
+                Some(body) => body,
+                _ => return fmt_err!("`let' missing body"),
+            };
+            return self.eval_let(&params, &vals, body);
+        } else if func == "defun" {
+            // TODO: function definitions are now global. If this behavior is kept, disallow defun
+            // top level?
+            let name = match iter.next() {
+                Some(name) => {
+                    match name {
+                        SExpr::Atom(Atom::Variable(s)) => s,
+                        _ => return fmt_err!("`defun' name must be variable name"),
+                    }
+                },
+                _ => return fmt_err!("`defun' missing name, bindings, and body"),
+            };
+            let params = match iter.next() {
+                Some(bindings) => self.eval_fun_params(bindings)?,
+                _ => return fmt_err!("`deffun' missing bindings and body"),
+            };
+
+            let body = match iter.next() {
+                Some(body) => body,
+                _ => return fmt_err!("`defun` missing body"),
+            };
+
+            let func = Func{params, body: body.clone()};
+            self.let_var[0].insert(name.clone(), Value::Func(func));
+            return Ok(Value::Nil);
+        }
+
         let mut vals = Vec::<_>::new();
         for exp in iter {
-            vals.push(self.exec_sexpr(exp)?);
+            vals.push(self.eval_sexpr(exp)?);
         }
 
         if let Some(func) = self.builtins.get(func) {
             Ok(func(&vals)?)
+        } else if let Some(func) = self.let_var[0].get(func) {
+            let func = match func {
+                Value::Func(f) => f,
+                _ => return fmt_err!("Variable isn't a function"),
+            };
+            if vals.len() != func.params.len() {
+                return fmt_err!("Number of variables not equal to number of formal parameters");
+            }
+
+            let func = func.clone(); // TODO: this avoid self.eval_let() reborrowing as mut while the func itself is borrowed in the .get(). Is this nececssary?
+
+            return self.eval_let(&func.params, &vals, &func.body);
         } else {
-            // TODO: user-defined functions
             fmt_err!("Function `{}' not found", func)
         }
             
 
     }
 
-    fn exec_sexpr(&mut self, expr: &SExpr) -> Result<Value, Error> {
+    fn eval_sexpr(&mut self, expr: &SExpr) -> Result<Value, Error> {
         let val = match expr {
-            SExpr::Atom(a) => self.exec_atom(&a)?,
-            SExpr::List(l) => self.exec_list(&l)?,
+            SExpr::Atom(a) => self.eval_atom(&a)?,
+            SExpr::List(l) => self.eval_list(&l)?,
             SExpr::Quoted(_) => todo!(),
         };
 
+        Ok(val)
+    }
+    // Returns (formal params, values)
+    fn eval_let_bindings(&mut self, bindings: &SExpr) -> Result<(Vec<String>, Vec<Value>), Error> {
+        let mut params = vec![];
+        let mut vals = vec![];
+        let list = match bindings {
+            SExpr::List(list) => list,
+            _ => return fmt_err!("`let' bindings must be a list"),
+        };
+        for bind in list {
+            let pair = match bind {
+                SExpr::List(pair) => pair,
+                _ => return fmt_err!("`let' bindings must be a list of lists"),
+            };
+
+            if pair.len() != 2 {
+                return fmt_err!("`let' bindings must be a list of pairs");
+
+            }
+             match &pair[0] {
+                SExpr::Atom(Atom::Variable(s)) => params.push(s.clone()),
+                _ => return fmt_err!("First element of a `let' binding pair must be a vriable name"),
+
+            };
+            vals.push(self.eval_sexpr(&pair[1])?);
+        }
+        Ok((params, vals))
+    }
+
+    fn eval_let(&mut self, params: &Vec<String>, vals: &Vec<Value>, expr: &SExpr) -> Result<Value, Error> {
+        if params.len() != vals.len() {
+            return fmt_err!("Number of arguments doesn't match number of formal parameters");
+        }
+        self.let_var.push(params.iter().zip(vals).map(|(a,b)| (a.clone(), b.clone())).collect());
+        let val = self.eval_sexpr(expr)?;
+        self.let_var.pop();
         Ok(val)
     }
 
     fn run(&mut self) {
         loop {
             let err = match self.parser.parse_sexpr() {
-                Ok(expr) => match self.exec_sexpr(&expr) {
+                Ok(expr) => match self.eval_sexpr(&expr) {
                     Ok(val) => {
                         if atty::is(Stream::Stdin) {
                             println!("{}", val);
