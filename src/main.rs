@@ -810,21 +810,26 @@ impl Interp {
         interp
     }
 
+    fn lookup_variable(&mut self, s: &String) -> Option<Value> { 
+        for vars in self.let_var.iter().rev() {
+            if let Some(v) = vars.get(s) {
+                return Some(v.clone());
+            }
+        }
+        None
+    }
+
     fn eval_atom(&mut self, atom: &Atom) -> Result<Value, Error> {
         let val = match atom {
             Atom::Int(i) => Value::Int(*i),
             Atom::Float(f) => Value::Float(*f),
             Atom::Str(s) => Value::Str(s.clone()), // TODO: clone nessesary?
             Atom::Variable(s) => {
-                if self.let_var.is_empty() {
-                    return fmt_err!("Variable `{}' not found", s);
+                if let Some(v) = self.lookup_variable(s) {
+                    v
+                } else {
+                    return fmt_err!("Variable `{}' not found", s)
                 }
-                for vars in self.let_var.iter().rev() {
-                    if let Some(v) = vars.get(s) {
-                        return Ok(v.clone());
-                    }
-                }
-                return fmt_err!("Variable `{}' not found", s)
             },
             Atom::True => Value::Bool(true),
             Atom::Nil => Value::Bool(false),
@@ -879,7 +884,7 @@ impl Interp {
 
         if let Some(func) = self.builtins.get(func) {
             Ok(func(&vals)?)
-        } else if let Some(func) = self.let_var[0].get(func) {
+        } else if let Some(func) = self.lookup_variable(func) {
             let func = match func {
                 Value::Func(f) => f,
                 _ => return fmt_err!("Variable isn't a function"),
