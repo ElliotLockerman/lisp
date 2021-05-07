@@ -733,12 +733,13 @@ impl Iterator for ConsIter {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Value {
     Int(i32),
     Float(f64),
     Str(String),
     Func(Func),
+    Builtin(Builtin),
     Bool(bool),
     Symbol(String),
     Cons(Rc<Cons>),
@@ -752,6 +753,7 @@ impl Value {
             Value::Float(x) => x.to_string(),
             Value::Str(x) => x.clone(),
             Value::Func(_) => "fn".into(), 
+            Value::Builtin(_) => "builtin".into(), 
             Value::Bool(b) => if *b { "T".to_string() } else { "Nil".to_string() },
             Value::Symbol(s) => s.clone(),
             Value::Cons(l) => {
@@ -761,12 +763,18 @@ impl Value {
         }
     }
 }
-
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.to_string())
+    }
+}
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.to_string())
     }
 }
+
+type Builtin = fn(&Vec<Value>) -> Result<Value, Error>;
 
 struct Interp {
     parser: Parser,
@@ -774,7 +782,7 @@ struct Interp {
     let_var: Vec<HashMap<String, Value>>, // Stack
     // TODO: other kinds of variables
 
-    builtins: HashMap<String, fn(&Vec<Value>) -> Result<Value, Error>>,
+    builtins: HashMap<String, Builtin>,
 }
 
 
@@ -815,6 +823,10 @@ impl Interp {
             if let Some(v) = vars.get(s) {
                 return Some(v.clone());
             }
+        }
+
+        if let Some(func) = self.builtins.get(s) {
+            return Some(Value::Builtin(*func));
         }
         None
     }
@@ -887,6 +899,7 @@ impl Interp {
         } else if let Some(func) = self.lookup_variable(func) {
             let func = match func {
                 Value::Func(f) => f,
+                Value::Builtin(b) => return b(&vals),
                 _ => return fmt_err!("Variable isn't a function"),
             };
             if vals.len() != func.params.len() {
