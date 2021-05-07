@@ -1,5 +1,6 @@
 
 use std::collections::{VecDeque, HashMap};
+use std::rc::Rc;
 
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
@@ -98,7 +99,8 @@ enum Token {
 
 struct TokenStream {
     stream: RustylineStream,
-    next: Option<Token>, }
+    next: Option<Token>, 
+}
 
 
 impl TokenStream {
@@ -610,6 +612,65 @@ fn builtin_num_le(vals: &Vec<Value>) -> Result<Value, Error> {
     pairwise_compare!(<=, vals)
 }
 
+fn builtin_list(vals: &Vec<Value>) -> Result<Value, Error> {
+    if vals.len() == 0 {
+        return Ok(Value::Bool(false));
+    }
+    let mut iter = vals.iter().rev();
+    let last = iter.next().unwrap();
+    let mut head: Rc<Cons> = Cons::new(last.clone());
+
+    while let Some(next) = iter.next() {
+        let prev = head.clone();
+        head = Cons::link(next.clone(), prev); 
+    }
+
+    Ok(Value::Cons(head))
+}
+
+fn builtin_cons(vals: &Vec<Value>) -> Result<Value, Error> {
+    if vals.len() != 2 {
+        return fmt_err!("cons takes exactly 2 arguments");
+    }
+
+    let first = vals[0].clone();
+    let tail = match &vals[1] {
+        Value::Cons(tail) => ConsLink::Tail(tail.clone()),
+        Value::Bool(false) => ConsLink::Nil,
+        _ => return fmt_err!("cons' second argument must be a cons cell"),
+    };
+    Ok(Value::Cons(Cons::from_raw(first, tail)))
+}
+
+fn builtin_car(vals: &Vec<Value>) -> Result<Value, Error> {
+    if vals.len() != 1 {
+        return fmt_err!("car takes exactly 1 arguments");
+    }
+
+    let cons = match &vals[0] {
+        Value::Cons(cons) => cons,
+        _ => return fmt_err!("car's argument must be a cons cell"),
+    };
+
+    return Ok(cons.car.clone())
+}
+
+fn builtin_cdr(vals: &Vec<Value>) -> Result<Value, Error> {
+    if vals.len() != 1 {
+        return fmt_err!("car takes exactly 1 arguments");
+    }
+
+    let cons = match &vals[0] {
+        Value::Cons(cons) => cons,
+        _ => return fmt_err!("car's argument must be a cons cell"),
+    };
+
+    match cons.cdr {
+        ConsLink::Tail(ref t) => Ok(Value::Cons(t.clone())),
+        ConsLink::Nil => Ok(Value::Bool(false)),
+    }
+}
+
 
 #[derive(Debug, Clone)]
 struct Func {
@@ -617,7 +678,60 @@ struct Func {
     body: SExpr,
 }
 
+#[derive(Debug, Clone)]
+enum ConsLink {
+    Tail(Rc<Cons>),
+    Nil,
+}
 
+#[derive(Debug, Clone)]
+struct Cons {
+    car: Value,
+    cdr: ConsLink,
+}
+
+impl Cons {
+    fn new(car: Value) -> Rc<Cons> {
+        Rc::new(Cons{car, cdr: ConsLink::Nil})
+    }
+    fn link(car: Value, cdr: Rc<Cons>) -> Rc<Cons> {
+        Rc::new(Cons{car, cdr: ConsLink::Tail(cdr)})
+    }
+    fn from_raw(car: Value, cdr: ConsLink) -> Rc<Cons> {
+        Rc::new(Cons{car, cdr})
+    }
+}
+
+
+
+struct ConsIter {
+    curr: Option<Rc<Cons>>,
+}
+
+impl ConsIter {
+    fn new(curr: Rc<Cons>) -> ConsIter {
+        ConsIter{curr: Some(curr)}
+    }
+
+}
+
+impl Iterator for ConsIter {
+    // TODO: switch to iterating over &Value
+    type Item = Rc<Cons>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.curr.take() {
+            Some(cons) => {
+                let val = cons.clone();
+                self.curr = match &cons.cdr {
+                    ConsLink::Tail(cons) => Some(cons.clone()),
+                    ConsLink::Nil => None,
+                };
+                Some(val)
+            }
+            None => return None,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 enum Value {
@@ -626,6 +740,8 @@ enum Value {
     Str(String),
     Func(Func),
     Bool(bool),
+    Symbol(String),
+    Cons(Rc<Cons>),
     // TODO: fn
 }
 
@@ -637,6 +753,11 @@ impl Value {
             Value::Str(x) => x.clone(),
             Value::Func(_) => "fn".into(), 
             Value::Bool(b) => if *b { "T".to_string() } else { "Nil".to_string() },
+            Value::Symbol(s) => s.clone(),
+            Value::Cons(l) => {
+                let elem = ConsIter::new(l.clone()).map(|x| x.car.to_string());
+                format!("({})", join(elem, " "))
+            },
         }
     }
 }
@@ -678,6 +799,13 @@ impl Interp {
         interp.builtins.insert("<".into(), builtin_num_lt);
         interp.builtins.insert(">=".into(), builtin_num_ge);
         interp.builtins.insert("<=".into(), builtin_num_le);
+
+        interp.builtins.insert("list".into(), builtin_list);
+        interp.builtins.insert("cons".into(), builtin_cons);
+        interp.builtins.insert("car".into(), builtin_car);
+        interp.builtins.insert("head".into(), builtin_car);
+        interp.builtins.insert("cdr".into(), builtin_cdr);
+        interp.builtins.insert("tail".into(), builtin_cdr);
 
         interp
     }
@@ -734,19 +862,20 @@ impl Interp {
         };
 
 
-        // TODO: break these out
-        if func == "let" {
-            return self.eval_let(iter);
-        } else if func == "defun" {
-            return self.eval_defun(iter);
-        } else if func == "if" {
-            return self.eval_if(iter);
+        // Intrinsics
+        match func.as_str() {
+            "let" => return self.eval_let(iter),
+            "defun" => return self.eval_defun(iter),
+            "if" => return self.eval_if(iter),
+            _ => (),
         }
 
+        // Function call
         let mut vals = Vec::<_>::new();
         for exp in iter {
             vals.push(self.eval_sexpr(exp)?);
         }
+
 
         if let Some(func) = self.builtins.get(func) {
             Ok(func(&vals)?)
@@ -765,15 +894,13 @@ impl Interp {
         } else {
             fmt_err!("Function `{}' not found", func)
         }
-            
-
     }
 
     fn eval_sexpr(&mut self, expr: &SExpr) -> Result<Value, Error> {
         let val = match expr {
             SExpr::Atom(a) => self.eval_atom(&a)?,
             SExpr::Form(f) => self.eval_form(&f)?,
-            SExpr::Quoted(_) => todo!(),
+            SExpr::Quoted(q) => todo!(),
         };
 
         Ok(val)
