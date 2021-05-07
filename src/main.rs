@@ -1,6 +1,5 @@
 
-use std::collections::VecDeque;
-use std::collections::HashMap;
+use std::collections::{VecDeque, HashMap};
 
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
@@ -275,7 +274,7 @@ enum Atom {
 #[derive(Debug, Clone)]
 enum SExpr {
     Atom(Atom),
-    List(Vec<SExpr>),
+    Form(Vec<SExpr>),
     Quoted(Vec<SExpr>),
 }
 
@@ -327,7 +326,7 @@ impl Parser {
                 if quoted {
                     return Ok(SExpr::Quoted(list));
                 } else {
-                    return Ok(SExpr::List(list));
+                    return Ok(SExpr::Form(list));
                 }
             } else {
                 self.stream.unget(next);
@@ -545,61 +544,72 @@ fn builtin_print(vals: &Vec<Value>) -> Result<Value, Error> {
     Ok(Value::Bool(false))
 }
 
-
-fn num_eq(a: &Value, b:&Value) -> Result<bool, Error> {
-    let val = match a {
-        Value::Int(a) => {
-            match b {
-                Value::Int(b) => a == b,
-                Value::Float(b) => (*a as f64) == *b,
-                _ => return fmt_err!("Only numbers are comparable with `='"),
-            }
-        },
-        Value::Float(a) => {
-            match b {
-                Value::Int(b) => *a == (*b as f64),
-                Value::Float(b) => a == b,
-                _ => return fmt_err!("Only numbers are comparable with `='"),
-            }
-        },
-        _ => return fmt_err!("Only numbers are comparable with `='"),
-    };
-
-    Ok(val)
-}
-
-fn builtin_num_eq(vals: &Vec<Value>) -> Result<Value, Error> {
-    let mut iter = vals.iter();
-    let first = match iter.next() {
-        Some(x) => x,
-        None => return fmt_err!("`=' missing arguments"),
-    };
-
-    while let Some(next) = iter.next() {
-        if !num_eq(first, next)? {
-            return Ok(Value::Bool(false));
+macro_rules! promoting {
+    ($a:expr, $op:tt, $b:expr) => { 
+        match ($a, $b) {
+            (Value::Int(a), Value::Int(b)) => a $op b,
+            (Value::Int(a), Value::Float(b)) => (*a as f64) $op *b,
+            (Value::Float(a), Value::Int(b)) => *a $op (*b as f64),
+            (Value::Float(a), Value::Float(b)) => a $op b,
+            _ => return fmt_err!("`{}' is only defined on numbers", stringify!($op)),
         }
     }
-
-    Ok(Value::Bool(true))
 }
+
 
 fn builtin_num_neq(vals: &Vec<Value>) -> Result<Value, Error> {
-    let mut iter = vals.iter();
-    let first = match iter.next() {
-        Some(x) => x,
-        None => return fmt_err!("`=' missing arguments"),
-    };
-
-
-    while let Some(next) = iter.next() {
-        if num_eq(first, next)? {
-            return Ok(Value::Bool(false));
-        }
+    if vals.len() != 2 {
+        return fmt_err!("`/=' is currently limited to exactly 2 arguments");
     }
 
-    Ok(Value::Bool(true))
+    let a = &vals[0];
+    let b = &vals[1];
+
+    let val = promoting!(a, !=, b);
+    Ok(Value::Bool(val))
 }
+
+
+macro_rules! pairwise_compare {
+    ($op:tt, $vals:expr) => {{
+        if $vals.len() == 0 {
+            return fmt_err!("`{}' missing arguments", stringify!($op));
+        }
+        let mut good = true;
+        for i in 0..$vals.len() - 1 {
+            let a = &$vals[i];
+            let b = &$vals[i+1];
+
+            good = promoting!(a, $op, b);
+            if !good {
+                break;
+            }
+
+        }
+
+        Ok(Value::Bool(good))
+    }}
+}
+fn builtin_num_eq(vals: &Vec<Value>) -> Result<Value, Error> {
+    pairwise_compare!(==, vals)
+}
+
+fn builtin_num_gt(vals: &Vec<Value>) -> Result<Value, Error> {
+    pairwise_compare!(>, vals)
+}
+
+fn builtin_num_lt(vals: &Vec<Value>) -> Result<Value, Error> {
+    pairwise_compare!(<, vals)
+}
+
+fn builtin_num_ge(vals: &Vec<Value>) -> Result<Value, Error> {
+    pairwise_compare!(>=, vals)
+}
+
+fn builtin_num_le(vals: &Vec<Value>) -> Result<Value, Error> {
+    pairwise_compare!(<=, vals)
+}
+
 
 #[derive(Debug, Clone)]
 struct Func {
@@ -619,15 +629,21 @@ enum Value {
     // TODO: fn
 }
 
+impl Value {
+    fn to_string(&self) -> String {
+        match self {
+            Value::Int(x) => x.to_string(),
+            Value::Float(x) => x.to_string(),
+            Value::Str(x) => x.clone(),
+            Value::Func(_) => "fn".into(), 
+            Value::Bool(b) => if *b { "T".to_string() } else { "Nil".to_string() },
+        }
+    }
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Value::Int(x) => write!(f, "{}", x),
-            Value::Float(x) => write!(f, "{}", x),
-            Value::Str(x) => write!(f, "{}", x),
-            Value::Func(_) => write!(f, "fn"),
-            Value::Bool(b) => write!(f, "{}", if *b { "T" } else { "Nil" }),
-        }
+        write!(f, "{}", self.to_string())
     }
 }
 
@@ -658,6 +674,10 @@ impl Interp {
         interp.builtins.insert("print".into(), builtin_print);
         interp.builtins.insert("=".into(), builtin_num_eq);
         interp.builtins.insert("/=".into(), builtin_num_neq);
+        interp.builtins.insert(">".into(), builtin_num_gt);
+        interp.builtins.insert("<".into(), builtin_num_lt);
+        interp.builtins.insert(">=".into(), builtin_num_ge);
+        interp.builtins.insert("<=".into(), builtin_num_le);
 
         interp
     }
@@ -686,7 +706,7 @@ impl Interp {
 
     fn eval_fun_params(&mut self, expr: &SExpr) -> Result<Vec<String>, Error> {
         let list = match expr {
-            SExpr::List(l) => l,
+            SExpr::Form(l) => l,
             _ => return fmt_err!("`defun' formal parameters must be a list"),
         };
 
@@ -702,7 +722,7 @@ impl Interp {
     }
 
 
-    fn eval_list(&mut self, list: &Vec<SExpr>) -> Result<Value, Error> {
+    fn eval_form(&mut self, list: &Vec<SExpr>) -> Result<Value, Error> {
         if list.is_empty() {
             return Ok(Value::Bool(false));
         }
@@ -716,63 +736,11 @@ impl Interp {
 
         // TODO: break these out
         if func == "let" {
-            let (params, vals) = match iter.next() {
-                Some(bindings) => self.eval_let_bindings(bindings)?,
-                _ => return fmt_err!("`let' missing bindings and body"),
-            };
-
-            let body = match iter.next() {
-                Some(body) => body,
-                _ => return fmt_err!("`let' missing body"),
-            };
-            return self.eval_let_body(&params, &vals, body);
+            return self.eval_let(iter);
         } else if func == "defun" {
-            // TODO: function definitions are now global. If this behavior is kept, disallow defun
-            // top level?
-            let name = match iter.next() {
-                Some(name) => {
-                    match name {
-                        SExpr::Atom(Atom::Variable(s)) => s,
-                        _ => return fmt_err!("`defun' name must be variable name"),
-                    }
-                },
-                _ => return fmt_err!("`defun' missing name, bindings, and body"),
-            };
-            let params = match iter.next() {
-                Some(bindings) => self.eval_fun_params(bindings)?,
-                _ => return fmt_err!("`defun' missing bindings and body"),
-            };
-
-            let body = match iter.next() {
-                Some(body) => body,
-                _ => return fmt_err!("`defun` missing body"),
-            };
-
-            let func = Func{params, body: body.clone()};
-            self.let_var[0].insert(name.clone(), Value::Func(func));
-            return Ok(Value::Bool(false));
+            return self.eval_defun(iter);
         } else if func == "if" {
-            let cond = match iter.next() {
-                Some(cond) => cond,
-                _ => return fmt_err!("`if' missing condition"),
-            };
-
-            let then = match iter.next() {
-                Some(then) => then,
-                _ => return fmt_err!("`if' missing then clause"),
-            };
-
-            let other = match iter.next() {
-                Some(other) => other,
-                _ => &SExpr::Atom(Atom::Nil),
-            };
-
-            let val = match self.eval_sexpr(cond)? {
-                Value::Bool(false) => self.eval_sexpr(other)?,
-                _ => self.eval_sexpr(then)?,
-            };
-
-            return Ok(val);
+            return self.eval_if(iter);
         }
 
         let mut vals = Vec::<_>::new();
@@ -804,7 +772,7 @@ impl Interp {
     fn eval_sexpr(&mut self, expr: &SExpr) -> Result<Value, Error> {
         let val = match expr {
             SExpr::Atom(a) => self.eval_atom(&a)?,
-            SExpr::List(l) => self.eval_list(&l)?,
+            SExpr::Form(f) => self.eval_form(&f)?,
             SExpr::Quoted(_) => todo!(),
         };
 
@@ -815,12 +783,12 @@ impl Interp {
         let mut params = vec![];
         let mut vals = vec![];
         let list = match bindings {
-            SExpr::List(list) => list,
+            SExpr::Form(list) => list,
             _ => return fmt_err!("`let' bindings must be a list"),
         };
         for bind in list {
             let pair = match bind {
-                SExpr::List(pair) => pair,
+                SExpr::Form(pair) => pair,
                 _ => return fmt_err!("`let' bindings must be a list of lists"),
             };
 
@@ -838,6 +806,19 @@ impl Interp {
         Ok((params, vals))
     }
 
+    fn eval_let<'a>(&mut self, mut iter: impl Iterator<Item = &'a SExpr>) -> Result<Value, Error> {
+        let (params, vals) = match iter.next() {
+            Some(bindings) => self.eval_let_bindings(bindings)?,
+            _ => return fmt_err!("`let' missing bindings and body"),
+        };
+
+        let body = match iter.next() {
+            Some(body) => body,
+            _ => return fmt_err!("`let' missing body"),
+        };
+        return self.eval_let_body(&params, &vals, body);
+    }
+
     fn eval_let_body(&mut self, params: &Vec<String>, vals: &Vec<Value>, expr: &SExpr) -> Result<Value, Error> {
         if params.len() != vals.len() {
             return fmt_err!("Number of arguments doesn't match number of formal parameters");
@@ -846,6 +827,57 @@ impl Interp {
         let val = self.eval_sexpr(expr)?;
         self.let_var.pop();
         Ok(val)
+    }
+
+    fn eval_defun<'a>(&mut self, mut iter: impl Iterator<Item = &'a SExpr>) -> Result<Value, Error> {
+        // TODO: function definitions are now global. If this behavior is kept, disallow defun
+        // top level?
+        let name = match iter.next() {
+            Some(name) => {
+                match name {
+                    SExpr::Atom(Atom::Variable(s)) => s,
+                    _ => return fmt_err!("`defun' name must be variable name"),
+                }
+            },
+            _ => return fmt_err!("`defun' missing name, bindings, and body"),
+        };
+        let params = match iter.next() {
+            Some(bindings) => self.eval_fun_params(bindings)?,
+            _ => return fmt_err!("`defun' missing bindings and body"),
+        };
+
+        let body = match iter.next() {
+            Some(body) => body,
+            _ => return fmt_err!("`defun` missing body"),
+        };
+
+        let func = Func{params, body: body.clone()};
+        self.let_var[0].insert(name.clone(), Value::Func(func));
+        return Ok(Value::Bool(false));
+    }
+
+    fn eval_if<'a>(&mut self, mut iter: impl Iterator<Item = &'a SExpr>) -> Result<Value, Error> {
+        let cond = match iter.next() {
+            Some(cond) => cond,
+            _ => return fmt_err!("`if' missing condition"),
+        };
+
+        let then = match iter.next() {
+            Some(then) => then,
+            _ => return fmt_err!("`if' missing then clause"),
+        };
+
+        let other = match iter.next() {
+            Some(other) => other,
+            _ => &SExpr::Atom(Atom::Nil),
+        };
+
+        let val = match self.eval_sexpr(cond)? {
+            Value::Bool(false) => self.eval_sexpr(other)?,
+            _ => self.eval_sexpr(then)?,
+        };
+
+        return Ok(val);
     }
 
     fn run(&mut self) {
