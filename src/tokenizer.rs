@@ -1,5 +1,5 @@
 
-use crate::text_stream::RustylineStream;
+use crate::text_stream::TextStream;
 
 use crate::error::Error;
 use super::fmt_err;
@@ -19,18 +19,24 @@ pub enum Token {
 }
 
 
-pub struct TokenStream {
-    stream: RustylineStream,
+pub struct Tokenizer {
+    stream: Box<dyn TextStream>,
     next: Option<Token>, 
 }
 
 
-impl TokenStream {
-    pub fn new() -> Self {
-        TokenStream{ 
-            stream: RustylineStream::new(),
+impl Tokenizer {
+    pub fn new(stream: Box<dyn TextStream>) -> Self {
+        Tokenizer{ 
+            stream,
             next: None,
         }
+    }
+
+    // Returns old text stream
+    pub fn set_stream(&mut self, stream: Box<dyn TextStream>) -> Box<dyn TextStream> {
+        let old = std::mem::replace(&mut self.stream, stream);
+        old
     }
 
     pub fn unget(&mut self, t: Token) {
@@ -180,5 +186,10 @@ impl TokenStream {
     pub fn pos(&self) -> (i32, i32) {
         self.stream.pos()
     }
+
+    pub fn is_term(&self) -> bool {
+        self.stream.is_term()
+    }
+
 }
 

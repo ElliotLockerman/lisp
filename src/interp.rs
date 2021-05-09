@@ -1,8 +1,8 @@
 
+use crate::text_stream::{TextStream, StringStream};
+
 use std::collections::HashMap;
 use std::rc::Rc;
-
-use atty::Stream;
 
 use itertools::join;
 
@@ -325,19 +325,19 @@ fn builtin_not(vals: &Vec<Value>) -> Result<Value, Error> {
 }
 
 #[derive(Debug, Clone)]
-struct Func {
+pub struct Func {
     params: Vec<String>,
     body: SExpr,
 }
 
 #[derive(Debug, Clone)]
-enum ConsLink {
+pub enum ConsLink {
     Tail(Rc<Cons>),
     Nil,
 }
 
 #[derive(Debug, Clone)]
-struct Cons {
+pub struct Cons {
     car: Value,
     cdr: ConsLink,
 }
@@ -386,7 +386,7 @@ impl Iterator for ConsIter {
 }
 
 #[derive(Clone)]
-enum Value {
+pub enum Value {
     Int(i32),
     Float(f64),
     Str(String),
@@ -438,13 +438,14 @@ pub struct Interp {
 
 
 impl Interp {
-    pub fn new() -> Self {
+    pub fn new(stream: Box<dyn TextStream>) -> Self {
         let mut interp = Interp { 
-            parser: Parser::new(), 
+            parser: Parser::new(stream), 
             let_var: vec![HashMap::new()], // Global
             builtins: HashMap::new(),
         };
 
+        // TODO: write macro to setup map automatically
         interp.builtins.insert("+".into(), builtin_sum);
         interp.builtins.insert("-".into(), builtin_sub);
         interp.builtins.insert("*".into(), builtin_mul);
@@ -467,7 +468,13 @@ impl Interp {
 
         interp.builtins.insert("not".into(), builtin_not);
 
+        interp.load_stdlib();
+
         interp
+    }
+
+    pub fn set_stream(&mut self, stream: Box<dyn TextStream>) -> Box<dyn TextStream> {
+        self.parser.set_stream(stream)
     }
 
     fn lookup_variable(&mut self, s: &String) -> Option<Value> { 
@@ -696,33 +703,57 @@ impl Interp {
         return Ok(val);
     }
 
+    pub fn step(&mut self) -> Result<Value, Error> {
+            match self.parser.parse_sexpr() {
+                Ok(expr) => self.eval_sexpr(&expr),
+                Err(e) => Err(e),
+            }
+
+    }
+
+    fn load_stdlib(&mut self) {
+        // TODO: move to file
+        let stdlib = 
+        "(defun map (f seq)
+          (if seq 
+               (cons (f (car seq)) (map f (cdr seq)))))".into();
+
+
+        let ss = Box::new(StringStream::new(stdlib));
+        let old = self.set_stream(ss);
+        loop {
+            match self.step() {
+                Ok(_) => continue,
+                Err(Error::EOF) => break,
+                Err(Error::Msg(msg)) => {
+                    let (line, col) = self.parser.pos();
+                    eprintln!("Error in lib line {}, col {}: {}", line, col, msg);
+                    std::process::exit(1);
+                },
+            }
+        }
+        self.set_stream(old);
+
+    }
+
     pub fn run(&mut self) {
         loop {
-            let err = match self.parser.parse_sexpr() {
-                Ok(expr) => match self.eval_sexpr(&expr) {
-                    Ok(val) => {
-                        if atty::is(Stream::Stdin) {
-                            println!("{}", val);
-                        }
-                        continue;
-                    },
-                    Err(msg) => msg
-                },
-                Err(e) => e
+            let err = match self.step() {
+                Ok(_) => continue,
+                Err(e) => e,
             };
-
             match err {
                 Error::Msg(msg) => {
                     let (line, col) = self.parser.pos();
                     eprintln!("Error line {}, col {}: {}", line, col, msg);
-                    if atty::is(Stream::Stdin) {
+                    if self.parser.is_term() {
                         self.parser.reset();
                     } else {
                         std::process::exit(1);
                     }
                 },
                 Error::EOF => {
-                    if atty::is(Stream::Stdin) {
+                    if self.parser.is_term() {
                         std::process::exit(0);
                     } else if self.parser.depth() > 0{
                         eprintln!("Unexpected EOF");
@@ -733,6 +764,21 @@ impl Interp {
                 }
             }
         }
+    }
+
+    pub fn eval(&mut self, s: String) -> Result<Value, Error> {
+        let ss = Box::new(StringStream::new(s));
+        let old = self.set_stream(ss);
+        let ret = match self.step() {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                self.parser.reset();
+                Err(e)
+            },
+        };
+
+        self.set_stream(old);
+        ret 
     }
 }
 
