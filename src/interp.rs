@@ -338,8 +338,8 @@ pub enum ConsLink {
 
 #[derive(Debug, Clone)]
 pub struct Cons {
-    car: Value,
-    cdr: ConsLink,
+    pub car: Value,
+    pub cdr: ConsLink,
 }
 
 impl Cons {
@@ -356,15 +356,15 @@ impl Cons {
 
 
 
-struct ConsIter {
+pub struct ConsIter {
     curr: Option<Rc<Cons>>,
 }
 
 impl ConsIter {
-    fn new(curr: Rc<Cons>) -> ConsIter {
+    // TODO: implement .iter() on Cons
+    pub  fn new(curr: Rc<Cons>) -> ConsIter {
         ConsIter{curr: Some(curr)}
     }
-
 }
 
 impl Iterator for ConsIter {

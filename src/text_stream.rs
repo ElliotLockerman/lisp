@@ -128,10 +128,6 @@ impl StringStream {
             col: 0
         }
     }
-
-    fn extend(&mut self, s: String) {
-        self.text.extend(s.chars());
-    }
 }
 
 
