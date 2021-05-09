@@ -10,3 +10,4 @@ edition = "2018"
 rustyline = "8.0.0"
 atty = "0.2.14"
 itertools = "0.10.0"
+phf = {version = "0.8.0", features = ["macros"]}

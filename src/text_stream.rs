@@ -22,6 +22,7 @@ pub struct NullStream {
 }
 
 impl NullStream {
+    #[cfg(test)] // Currently used only in tests, might be used more broadly later
     pub fn new() -> Self {
         NullStream{}
     }

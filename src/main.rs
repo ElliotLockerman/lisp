@@ -2,6 +2,7 @@
 mod error;
 mod text_stream;
 mod parser;
+mod builtins;
 
 mod tokenizer;
 use text_stream::RustylineStream;
