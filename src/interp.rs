@@ -265,7 +265,7 @@ fn builtin_list(vals: &Vec<Value>) -> Result<Value, Error> {
         head = Cons::link(next.clone(), prev); 
     }
 
-    Ok(Value::Cons(head))
+    Ok(Value::Cons(ConsLink::Tail(head)))
 }
 
 fn builtin_cons(vals: &Vec<Value>) -> Result<Value, Error> {
@@ -275,11 +275,14 @@ fn builtin_cons(vals: &Vec<Value>) -> Result<Value, Error> {
 
     let first = vals[0].clone();
     let tail = match &vals[1] {
-        Value::Cons(tail) => ConsLink::Tail(tail.clone()),
+        Value::Cons(tail) => match tail {
+            ConsLink::Tail(tail) => ConsLink::Tail(tail.clone()),
+            ConsLink::Nil => ConsLink::Nil,
+        }
         Value::Bool(false) => ConsLink::Nil,
         _ => return fmt_err!("cons' second argument must be a cons cell"),
     };
-    Ok(Value::Cons(Cons::from_raw(first, tail)))
+    Ok(Value::Cons(ConsLink::Tail(Cons::from_raw(first, tail))))
 }
 
 fn builtin_car(vals: &Vec<Value>) -> Result<Value, Error> {
@@ -287,12 +290,13 @@ fn builtin_car(vals: &Vec<Value>) -> Result<Value, Error> {
         return fmt_err!("car takes exactly 1 arguments");
     }
 
-    let cons = match &vals[0] {
-        Value::Cons(cons) => cons,
-        _ => return fmt_err!("car's argument must be a cons cell"),
-    };
-
-    return Ok(cons.car.clone())
+    match &vals[0] {
+        Value::Cons(cons) => match cons {
+            ConsLink::Tail(cons) => Ok(cons.car.clone()),
+            ConsLink::Nil => Ok(Value::Bool(false)),
+        },
+        _ => fmt_err!("car's argument must be a cons cell"),
+    }
 }
 
 fn builtin_cdr(vals: &Vec<Value>) -> Result<Value, Error> {
@@ -301,12 +305,15 @@ fn builtin_cdr(vals: &Vec<Value>) -> Result<Value, Error> {
     }
 
     let cons = match &vals[0] {
-        Value::Cons(cons) => cons,
+        Value::Cons(cons) => match cons {
+            ConsLink::Tail(cons) => cons,
+            ConsLink::Nil => panic!(),
+        },
         _ => return fmt_err!("car's argument must be a cons cell"),
     };
 
     match cons.cdr {
-        ConsLink::Tail(ref t) => Ok(Value::Cons(t.clone())),
+        ConsLink::Tail(ref t) => Ok(Value::Cons(ConsLink::Tail(t.clone()))),
         ConsLink::Nil => Ok(Value::Bool(false)),
     }
 }
@@ -336,6 +343,12 @@ pub enum ConsLink {
     Nil,
 }
 
+impl ConsLink {
+    pub fn iter(&self) -> ConsIter {
+        ConsIter::new(self)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Cons {
     pub car: Value,
@@ -356,31 +369,26 @@ impl Cons {
 
 
 
-pub struct ConsIter {
-    curr: Option<Rc<Cons>>,
+pub struct ConsIter<'a> {
+    next: &'a ConsLink,
 }
 
-impl ConsIter {
-    // TODO: implement .iter() on Cons
-    pub  fn new(curr: Rc<Cons>) -> ConsIter {
-        ConsIter{curr: Some(curr)}
+impl<'a> ConsIter<'a> {
+    pub  fn new(curr: &'a ConsLink) -> ConsIter<'a> {
+        ConsIter{next: curr}
     }
 }
 
-impl Iterator for ConsIter {
+impl<'a> Iterator for ConsIter<'a>{
     // TODO: switch to iterating over &Value
-    type Item = Rc<Cons>;
+    type Item = &'a Value;
     fn next(&mut self) -> Option<Self::Item> {
-        match self.curr.take() {
-            Some(cons) => {
-                let val = cons.clone();
-                self.curr = match &cons.cdr {
-                    ConsLink::Tail(cons) => Some(cons.clone()),
-                    ConsLink::Nil => None,
-                };
-                Some(val)
+        match self.next {
+            ConsLink::Tail(cons) => {
+                self.next = &cons.cdr;
+                Some(&cons.car)
             }
-            None => return None,
+            ConsLink::Nil => return None,
         }
     }
 }
@@ -393,7 +401,7 @@ pub enum Value {
     Func(Func),
     Builtin(Builtin),
     Bool(bool),
-    Cons(Rc<Cons>),
+    Cons(ConsLink),
     // TODO: fn
 }
 
@@ -407,7 +415,7 @@ impl Value {
             Value::Builtin(_) => "builtin".into(), 
             Value::Bool(b) => if *b { "T".to_string() } else { "Nil".to_string() },
             Value::Cons(l) => {
-                let elem = ConsIter::new(l.clone()).map(|x| x.car.to_string());
+                let elem = l.iter().map(|x| x.to_string());
                 format!("({})", join(elem, " "))
             },
         }

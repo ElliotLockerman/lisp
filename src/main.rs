@@ -7,7 +7,7 @@ mod tokenizer;
 use text_stream::RustylineStream;
 
 mod interp;
-use interp::{Interp, ConsIter};
+use interp::Interp;
 
 
 
@@ -53,9 +53,9 @@ mod tests {
     fn map() {
         let mut interp = Interp::new(Box::new(NullStream::new()));
         let val: Vec<i32> = match interp.eval("(map (lambda (a) (+ a 1)) (list 1 2 3))".into()).unwrap() {
-            Value::Cons(c) => ConsIter::new(c)
-                .map(|x| match x.car {
-                    Value::Int(i) => i,
+            Value::Cons(c) => c.iter()
+                .map(|x| match x {
+                    Value::Int(i) => *i,
                     _ => panic!(),
                 })
                 .collect(),
