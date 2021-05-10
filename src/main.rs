@@ -53,6 +53,24 @@ mod tests {
     #[test]
     fn map() {
         let mut interp = Interp::new(Box::new(NullStream::new()));
+        interp.eval("(defun inc (a) (+ a 1))".into()).unwrap();
+        let val: Vec<i32> = match interp.eval("(map inc (list 1 2 3))".into()).unwrap() {
+            Value::Cons(c) => c.iter()
+                .map(|x| match x {
+                    Value::Int(i) => *i,
+                    _ => panic!(),
+                })
+                .collect(),
+            _ => panic!(),
+        };
+
+        assert_eq!(val, vec![2, 3, 4]);
+    }
+    #[test]
+
+
+    fn lambda() {
+        let mut interp = Interp::new(Box::new(NullStream::new()));
         let val: Vec<i32> = match interp.eval("(map (lambda (a) (+ a 1)) (list 1 2 3))".into()).unwrap() {
             Value::Cons(c) => c.iter()
                 .map(|x| match x {
@@ -65,5 +83,6 @@ mod tests {
 
         assert_eq!(val, vec![2, 3, 4]);
     }
+
 }
 
