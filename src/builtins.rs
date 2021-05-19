@@ -5,7 +5,7 @@ use itertools::join;
 
 use phf::phf_map;
 
-use crate::interp::{Value, Cons, ConsLink};
+use crate::interp::{Value, Cons};
 use crate::error::Error;
 use super::fmt_err;
 
@@ -288,10 +288,10 @@ fn builtin_list(vals: &Vec<Value>) -> Result<Value, Error> {
 
     while let Some(next) = iter.next() {
         let prev = head.clone();
-        head = Cons::link(next.clone(), prev); 
+        head = Cons::link(next.clone(), prev);
     }
 
-    Ok(Value::Cons(ConsLink::Tail(head)))
+    Ok(Value::Cons(head))
 }
 
 fn builtin_cons(vals: &Vec<Value>) -> Result<Value, Error> {
@@ -301,14 +301,11 @@ fn builtin_cons(vals: &Vec<Value>) -> Result<Value, Error> {
 
     let first = vals[0].clone();
     let tail = match &vals[1] {
-        Value::Cons(tail) => match tail {
-            ConsLink::Tail(tail) => ConsLink::Tail(tail.clone()),
-            ConsLink::Nil => ConsLink::Nil,
-        }
-        Value::Bool(false) => ConsLink::Nil,
+        Value::Cons(tail) => Some(tail.clone()),
+        Value::Bool(false) => None,
         _ => return fmt_err!("cons' second argument must be a cons cell"),
     };
-    Ok(Value::Cons(ConsLink::Tail(Cons::from_raw(first, tail))))
+    Ok(Value::Cons(Cons::from_raw(first, tail)))
 }
 
 fn builtin_car(vals: &Vec<Value>) -> Result<Value, Error> {
@@ -317,10 +314,7 @@ fn builtin_car(vals: &Vec<Value>) -> Result<Value, Error> {
     }
 
     match &vals[0] {
-        Value::Cons(cons) => match cons {
-            ConsLink::Tail(cons) => Ok(cons.car.clone()),
-            ConsLink::Nil => Ok(Value::Bool(false)),
-        },
+        Value::Cons(cons) => Ok(cons.car.clone()),
         _ => fmt_err!("car's argument must be a cons cell"),
     }
 }
@@ -331,16 +325,13 @@ fn builtin_cdr(vals: &Vec<Value>) -> Result<Value, Error> {
     }
 
     let cons = match &vals[0] {
-        Value::Cons(cons) => match cons {
-            ConsLink::Tail(cons) => cons,
-            ConsLink::Nil => panic!(),
-        },
+        Value::Cons(cons) => cons, 
         _ => return fmt_err!("car's argument must be a cons cell"),
     };
 
     match cons.cdr {
-        ConsLink::Tail(ref t) => Ok(Value::Cons(ConsLink::Tail(t.clone()))),
-        ConsLink::Nil => Ok(Value::Bool(false)),
+        Some(ref t) => Ok(Value::Cons(t.clone())),
+        None => Ok(Value::Bool(false)),
     }
 }
 

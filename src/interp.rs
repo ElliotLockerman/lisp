@@ -21,44 +21,35 @@ pub struct Func {
 }
 
 #[derive(Debug, Clone)]
-pub enum ConsLink {
-    Tail(Rc<Cons>),
-    Nil,
+pub struct Cons {
+    pub car: Value,
+    pub cdr: Option<Rc<Cons>>,
 }
 
-impl ConsLink {
+impl Cons {
     pub fn iter(&self) -> ConsIter {
         ConsIter::new(self)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Cons {
-    pub car: Value,
-    pub cdr: ConsLink,
-}
-
 impl Cons {
     pub fn new(car: Value) -> Rc<Cons> {
-        Rc::new(Cons{car, cdr: ConsLink::Nil})
+        Rc::new(Cons{car, cdr: None})
     }
     pub fn link(car: Value, cdr: Rc<Cons>) -> Rc<Cons> {
-        Rc::new(Cons{car, cdr: ConsLink::Tail(cdr)})
+        Rc::new(Cons{car, cdr: Some(cdr)})
     }
-    pub fn from_raw(car: Value, cdr: ConsLink) -> Rc<Cons> {
+    pub fn from_raw(car: Value, cdr: Option<Rc<Cons>>) -> Rc<Cons> {
         Rc::new(Cons{car, cdr})
     }
 }
 
-
-
 pub struct ConsIter<'a> {
-    next: &'a ConsLink,
+    next: Option<&'a Cons>,
 }
-
 impl<'a> ConsIter<'a> {
-    pub  fn new(curr: &'a ConsLink) -> ConsIter<'a> {
-        ConsIter{next: curr}
+    pub  fn new(curr: &'a Cons) -> ConsIter<'a> {
+        ConsIter{next: Some(curr)}
     }
 }
 
@@ -67,11 +58,12 @@ impl<'a> Iterator for ConsIter<'a>{
     type Item = &'a Value;
     fn next(&mut self) -> Option<Self::Item> {
         match self.next {
-            ConsLink::Tail(cons) => {
-                self.next = &cons.cdr;
-                Some(&cons.car)
-            }
-            ConsLink::Nil => return None,
+            Some(cons) => {
+                let val = &cons.car;
+                self.next = cons.cdr.as_ref().map(|x| &**x);
+                Some(&val)
+            },
+            None => None,
         }
     }
 }
@@ -84,7 +76,7 @@ pub enum Value {
     Func(Func),
     Builtin(Builtin),
     Bool(bool),
-    Cons(ConsLink),
+    Cons(Rc<Cons>),
     // TODO: fn
 }
 
